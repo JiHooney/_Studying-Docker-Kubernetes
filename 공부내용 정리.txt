@@ -1,0 +1,539 @@
+
+			eth0		PublicIP
+서버1	manager		172.31.4.67	3.35.136.85
+서버2	worker1		172.31.7.172	3.38.116.2
+서버3	worker2		172.31.15.144	3.34.135.182
+
+
+###스웜 모드
+매니저 서버에서
+docker swarm init --advertise-addr 3.35.136.85
+
+
+-워커노드추가하기
+docker swarm join \
+--token SWMTKN-1-4il3welngidtmixsd4uw3be28moknc1m4bdjyc3hb41we8tb3y-5vnihejdxbl7xl8x4crr04k6c \
+3.35.136.85:2377
+
+-스웜모드
+docker명령어의 제어 단위는 하나의 컨테이너,
+docker swarm의 제어 단위는 서비스, 서비스는 같은 이미지에서 생성된 컨테이너의 집합,
+서비스를 제어하면 해당 서비스 내의 컨테이너에 같은 명령어를 동시에 수행한다.
+예를들어 우분투 이미지로 서비스를 생성하고 컨테이너 수를 3개로 설정했다면 스웜 스케줄러는
+서비스의 정의에 따라 컨테이너를 할당할 적합한 노드들을 선택한다. 반드시 각 노드에 하나씩
+설정되는 것은 아니다.
+아무튼 이처럼 함께 생성된 컨테이너를 레플리카(replica)라고 하며, 서비스에 설정된 레플리카의 수만큼
+컨테이너가 스웜 클러스터 내에 존재해야 한다.
+서비스는 롤링업데이트 기능도 제공. 서비스 내 컨테이너들의 이미지를 일괄적으로 업데이트해야 할 때
+컨테이너들의 이미지를 순서대로 변경해 서비스 자체가 다운되는 시간 없이 업데이트를 진행한다.
+
+-서비스 생성하기(매니저 노드에서 진행)
+서비스 내의 컨테이너는 detached모드로 docker run -d ~ 옵션을 사용해 동작할 수 있는
+이미지를 사용해야 한다.
+
+docker service create \
+ubuntu:14.04 \
+/bin/sh -c "while true; do echo hello world; sleep 1; done"
+
+-서비스 구동확인
+docker service ls
+docker service ps [서비스 이름]
+
+-서비스 삭제
+docker service rm youthful_sanderson
+
+-nginx웹 서버 서비스 생성하기
+docker service create --name myweb \
+--replicas 2 \
+-p 80:80 \
+nginx
+
+docker service ps myweb
+
+두 대의 서버에 웹 서버 컨테이너가 만들어졌고 스웜 클러스터 내의 어떠한 노드로 접근해도
+위 서비스의 웹 서버에 접근할 수 있다. worker2 노드의 IP주소 접근해보자.
+(먼저 aws 보안그룹 인바운드 규칙에서 80포트 열고 아웃바운드는 모든 포트 열어놓기)
+
+-nginx웹 서버 4대로 증설
+docker service scale myweb=4
+docker service ps myweb
+
+-서비스의 종류 복제모드, 글로벌모드
+복제모드: 레플리카셋의 수를 정의해 그만큼의 컨테이너를 생성
+글로벌모드: 스웜클럴스터 내에서 사용할 수 있는 모든 노드에 컨테이너를 반드시 하나씩 생성
+따라서 글로벌모드에서는 레플리카 셋의 수를 지정하지 않는다.
+
+-글로벌 모드 서비스 생성
+docker service create --name global_web \
+--mode global \
+nginx
+
+docker service ls
+docker service ps global_web
+
+-스웜모드의 서비스 장애 복구
+서비스 내의 컨테이너 하나 삭제하면 스웜이 알아서 새로운 노드에 해당 컨테이너를 자동으로
+생성해준다.
+
+-서비스 롤링 업데이트
+nginx웹서버 낮은 버전으로 서비스를 만들고 업데이트를 해본다.
+
+docker service create --name myweb2 \
+--replicas 3 \
+nginx:1.10
+
+docker service ls
+docker service ps myweb2
+
+docker service update \
+--image nginx:1.11 \
+myweb2
+
+docker service ps myweb2
+
+\_가 붙어있는 것이 업데이트 되기 전 삭제된 컨테이너이고,
+\_가 붙어있지 않은 것이 업데이트 된 컨테이너이다.
+
+-서비스 생성 시 롤링 업데이트에 관한 설정하기
+docker service create \
+--replicas 4 \
+--name myweb3 \
+--update-delay 10s \
+--update-parallelism 2 \
+nginx:1.10
+
+-해당 서비스의 설정된 롤링업데이트 설정 출력하기
+docker service inspect --pretty myweb3
+
+-롤링 업데이트 이전으로 되돌리기
+docker service rollback myweb3
+
+-서비스 컨테이너에 설정 정보 전달하기: config, secret
+애플리케이션을 외부에 서비스하게 하려면 내 환경에 맞춘 설정파일이나 값들이 컨테이너 내부에
+미리 준비돼 있어야 한다. 지금까지는 호스트에 위치한 설정파일이나 값을 볼륨으로써 컨테이너에 
+공유했다. 아래와 같이 사설 레지스트리를 생성할 때 설정파일을 전달하거나
+docker run -d --name yml_registry \
+-p 5002:5000 \
+--restart=always \
+-v $(pwd)/config.yml:/etc/docker/registry/config.yml \
+registry:2.6
+
+혹은 컨테이너 내부의 설정값을 유동적으로 설정하기 위해 -e옵션을 통한 환경 변수도 사용할 수 있다.
+docker run -d \
+--name wordpressdb_hostvolume \
+-e MYSQL_ROOT_PASSWORD=password \
+-e MYSQL_DATABASE=wordpress \
+-v /home/wordpress_db:/var/lib/mysql \
+mysql:5.7
+
+그러나 스웜 모드와 같은 서버 클러스터에서 파일 공유를 위해 설정 파일을 호스트마다 마련해두는
+것은 매우 비효율적이다.  그뿐만 아니라 비밀번호와 같이 민감한 정보를 환경 변수로 설정하는 것은
+보안상으로 아주 위험하다. 이를 위해 스웜모드에서는 secret과 config라는 기능을 제공한다.
+secret은 SSH키, 인증서 키와 같이 민감한 데이터를 전송하기 위해서,
+config는 nginx나 레지스트리 설정 파일과 같이 암호화할 필요가 없는 설정값들에 대해 쓰일 수 있다.
+
+그러나 secret과 config는 스웜모드에서만 사용될 수 있는 기능이다. docker run에서는 사용할 수 없다.
+
+-secret사용하기
+파일에 저장된 비번을 사용할 수 있지만 아래와 같이 echo명령어를 통해 비번을 입력할 수 있다.
+echo 1q2w3e4r | docker secret create my_mysql_password -
+
+docker secret ls
+
+docker secret inspect my_mysql_password
+
+생성된 secret을 조회해도 실제 값을 확인할 수 없다. secret값은 매니저 노드 간에 암호화된 상태로
+저장된다. 또한 secret파일은 컨테이너에 배포된 뒤에도 파일 시스템이 아닌 메모리에 저장되기 때문에
+서비스 컨테이너가 삭제될 경우 같이 삭제되는 일종의 휘발성을 띠게 된다.
+
+-생성한 secret을 통해 mysql 컨테이너 생성
+docker service create \
+--name mysql \
+--replicas 1 \
+--secret source=my_mysql_password,target=mysql_root_password \
+--secret source=my_mysql_password,target=mysql_password \
+-e MYSQL_ROOT_PASSWORD_FILE="/run/secrets/mysql_root_password" \
+-e MYSQL_PASSWORD_FILE="/run/secrets/mysql_password" \
+-e MYSQL_DATABASE="wordpress" \
+mysql:5.7
+
+--secret옵션을 통해 컨테이너로 공유된 값은 기본적으로 컨테이너 내부의 /run/secrets/ 디렉터리에
+마운트됩니다. 
+
+도커 안에서 /run/secrets 디렉토리에 비번 파일있는지 확인하기
+docker ps
+docker exec mysql.1.wc7kgdws5vngvha7bl4cr98n8 ls /run/secrets
+docker exec mysql.1.wc7kgdws5vngvha7bl4cr98n8 cat /run/secrets/mysql_password
+
+
+-config 사용하기
+사설 레지스트리의 설정파일을 registry-config라는 이름의 config로 저장한다.
+먼저 yml파일이란 xml이나 json처럼 어려운 형식말고 읽고 쓰기 쉽도록 만들어진 데이터 형식파일이다.
+
+vi config.yml
+
+version: 0.1
+log:
+  level: info
+storage:
+  filesystem:
+    rootdirectory: /registry_data
+  delete:
+    enabled: true
+http:
+  addr: 0.0.0.0:5000
+
+
+<!--
+yml파일 만들기
+docker run -d -p 5001:5000 \
+--name registry_delete_enabled \
+--restart=always \
+-e REGISTRY_STORAGE_DELETE_ENABLED=true \
+-e REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/var/lib/mydocker \
+
+docker exec registry_delete_enabled cat /etc/docker/registry/config.yml
+-->
+
+
+docker config create registry-config config.yml
+docker config inspect registry-config
+
+Data라는 항목을 base64로 인코딩한 뒤 저장하고 디코딩하면 원래의 값을 확인할 수 있다.
+echo [Data] | base64 -d
+echo dmVyc2lvbjogMC4xCmxvZzoKICBsZXZlbDogaW5mbwpzdG9yYWdlOgogIGZpbGVzeXN0ZW06CiAgICByb290ZGlyZWN0b3J5OiAvcmVnaXN0cnlfZGF0YQogIGRlbGV0ZToKICAgIGVuYWJsZWQ6IHRydWUKaHR0cDoKICBhZGRyOiAwLjAuMC4wOjUwMDAK | base64 -d
+
+-config로 사설 레지스트리 생성하기
+docker service create \
+--name yml_registry \
+-p 5000:5000 \
+--config source=registry-config,target=/etc/docker/registry/config.yml \
+registry:2.6
+
+secret과 config의 값은 수정할 수 없지만, 서비스 컨테이너가 새로운 값을 사용해야 한다면
+docker service update 명령어의 --config-rm, --config-add, --secret-rm, --secret-add옵션을 사용해
+서비스가 사용하는 secret이나 config를 추가하고 삭제할 수 있다.
+이를 활용하면 이미지를 다시 빌드할 필요 없이도 여러 설정값의 애플리케이션을 쉽게
+사용할 수 있다.
+
+
+-도커 스웜 네트워크
+스웜 모드는 여러 개의 도커 엔진에 같은 컨테이너를 분산해서 할당하기 때문에 각 도커 데몬의 
+네트워크가 하나로 묶인, 이른바 네트워크 풀이 필요하다. 서비스를 외부로 노출했을 때 어느 노드로
+접근하더라도 해당 서비스의 컨테이너에 접근할 수 있게 라우팅 기능이 필요하다.
+이러한 네트워크 기능은 스웜 모드가 자체적으로 지원하는 네트워크 드라이버를 통해 사용할 수 있다.
+
+docker_gwbridge네트워크는 스웜에서 오버레이 네트워크를 사용할 때 사용된다.
+ingress 네트워크는 로드밸런싱과 라우팅 메시에 사용된다.
+
+ingress 네트워크는 스웜 클러스터를 생성하면 자동으로 등록되는 네트워크로서, 스웜 모드를 
+사용할 때만 유효하다. 이는 docker network ls 명령어를 입력했을 때 확인할 수 있는 SCOPE 항목에서
+swarm으로 설정된 것에서 확인할 수 있다.
+
+ingress네트워크는 어떤 스웜노드에 접근하더라도 서비스 내의 컨테이너에 접근할 수 있게 설정하는
+라우팅 메시를 구성하고, 서비스 내의 컨테이너에 대한 접근을 라운드 로빈 방식으로 분산하는 
+로드 밸런싱을 담당한다.
+
+docker service create --name hostname \
+-p 80:80 \
+--replicas=4 \
+alicek106/book:hostname
+
+-각 컨테이너의 ID, status, image 확인하기
+docker ps --format "table {{.ID}}\t{{.Status}}\t{{.Image}}"
+
+
+스웜 모드로 생성된 모든 서비스의 컨테이너가 외부로 노출되기 위해 무조건 ingress 네트워크를
+사용해야 하는 것은 아니다. 특정 포트를 사용하도록 해보자. 하지만 어느 호스트에서 컨테이너가 
+생성될 지 알 수 없어 포트 및 서비스 관리가 어렵다.
+docker service create \
+--publish mode=host,target=80,published=8080,protocol=tcp \
+--name web \
+nginx
+
+-컨테이너 내부에서 ifconfig명령어로 가상 네트워크 ip출력하기
+docker ps --format "table {{.ID}}\t{{.Status}}\t{{.Image}}"
+
+docker exec c6652fcbfaed ifconfig
+
+오버레이 네트워크는 여러 개의 도커 데몬을 하나의 네트워크 풀로 만드는 네트워크 가상화 기술로서,
+도커에 오버레이 네트워크를 적용하면 여러 도커 데몬에 존재하는 컨테이너가 서로 통신할 수 있다.
+
+
+-서비스 디스커버리
+같은 컨테이너를 여러 개 만들어 사용할 때 쟁점은 새로 생성된 컨테이너의 발견 및 없어진 컨테이너
+감지이다. 일반적으로 이 동작은 주키퍼, etcd 등의 분산 코디네이터를 외부에 두고 사용해서 해결
+하지만 스웜 모드는 서비스 발견 기능을 자체적으로 지원한다. 
+
+먼저 오버레이 네트워크 생성한다.
+docker network create -d overlay discovery
+
+2개의 서비스 생성
+docker service create --name server \
+--replicas 2 \
+--network discovery \
+alicek106/book:hostname
+
+docker service create --name client \
+--network discovery \
+alicek106/book:curl \
+ping docker.com
+
+client 서비스 컨테이너의 내부에 들어가려면 해당 컨테이너가 어디에 있는지 알아야 한다.
+docker service ps client
+
+docker ps --format "table {{.ID}}\t{{.Status}}\t{{.Image}}" | grep ping
+
+
+이번에는 swarm-manager노드에서 다음 명령어로 server 서비스의 컨테이너 레플리카 수를 3개로 늘린다.
+docker service scale server=3
+
+-스웜모드의 볼륨
+여태까지는 아래와 같이 볼륨을 생성했다.
+호스트와 디렉터리 공유
+docker run -it --name host_dir_case -v /root:/root ubuntu:14.04
+
+도커 볼륨 사용하는 경우
+docker run -it --name volume_case -v myvolume:/root ubuntu:14.04
+
+도커 스웜 모드에서는 도커 볼륨을 사용할 지, 호스트 외 디렉터리를 공유할지를 좀 더 명확히 하여
+볼륨을 사용해야 한다.
+즉, 서비스를 생성할 때 도커 볼륨을 사용할지 호스트와 디렉터리를 공유할지 명시해야 한다.
+
+volume 타입의 볼륨 생성
+docker service create --name ubuntu \
+--mount type=volume,source=myvol,target=/root \
+ubuntu:14.04 \
+ping www.naver.com
+
+서비스를 생성하면 서비스를 위한 새로운 볼륨을 생성함과 동시에 컨테이너 내부의 /etc/vim 
+디렉터리에 있는 파일을 볼륨으로 복사한다. 
+
+해당 서비스가 어디에 만들어졌는지 확인하기
+docker service ls
+docker service ps qfs2ivhrozna
+
+위에서 확인한 노드에서 컨테이너 생성하고 들어간다.
+docker run -it --name test \
+-v test:/root \
+ubuntu:14.04
+
+컨테이너 내부의 /etc/vim 디렉터리에 파일 미리 존재하는지 확인
+ls root/
+
+
+
+스웜 클러스터에서 볼륨 사용은 상당히 까다롭다. 서비스를 할당받을 수 있는 모든 노드가
+볼륨 데이터를 가지고 있어야 하기 때문이다. 스웜 매니저에 내장된 스케줄러가 컨테이너를 할당할 때
+어느 노드에 할당해도 서비스에 정의된 볼륨을 사용할 수 있어야 한다. 따라서 여러 개의 도커 데몬을
+관리해야 하는 스웜 모드에서는 도커 볼륨, 또는 호스트와의 볼륨 사용이 적합하지 않은 기능을 수 있다.
+
+이를 해결하기 위해서는 어느 노드에서도 접근 가능한 퍼시스턴트 스토리지를 사용하는 것이다.
+퍼시스턴트 스토리지는 호스트와 컨테이너와 별개로 외부에 존재해 네트워크로 마운트할 수 있는
+스토리지이다.
+서비스의 컨테이너가 각 노드에 할당될 때 퍼시스턴트 스토리지를 마운트해 사용하면 노드에 볼륨을
+생성하지 않아도 되며, 컨테이너가 어느 노드에 할당되는 컨테이너에 필요한 파일을 읽고 쓸 수 있다.
+그러나 이러한 퍼시스턴트 스토리지를 도커가 자체적으로 제공하지는 않으므로 서드파티 플러그인을
+사용하거나 nfs, dfs 등을 별도로 구성해야 한다.
+
+
+-도커 스웜 모드에서 노드 다루기
+노드의 할당 가능 여부를 변경하기
+docker node ls
+
+Active 상태는 새로운 노드가 스웜 클러스터에 추가되면 기본적으로 설정, 노드가 서비스의 컨테이너를
+할당받을 수 있음을 의미한다.
+Active상태로 변경하려면 아래 명령어이다.
+docker node update \
+--availability active \
+worker1
+
+Drain 상태는 스웜 매니저의 스케줄러는 컨테이너를 해당 노드에 할당하지 않는다.
+Drain상태로 변경하려면 아래와 같다.
+docker node update \
+--availability drain \
+worker1
+
+Pause 상태는 서비스의 컨테이너를 더 이상 할당받지 않는다는 점에서 Drain과 같지만 실행 중인
+컨테이너가 중지되지는 않는다는 점에서 다르다. 
+docker node update \
+--availability pause \
+worker1
+
+
+-노드라벨추가
+노드에 라벨을 추가하는 것은 노드를 분류하는 것과 같다. 라벨은 키-값 형태를 가지고 있으며, 
+키 값으로 노드를 구별할 수 있다. 특정 노드에 라벨을 추가하면 서비스를 할당할 때 컨테이너를
+생성할 노드의 그룹을 선택하는 것이 가능하다.
+
+노드라벨 추가하기
+docker node update \
+--label-add storage=ssd \
+worker1
+
+설정된 라벨 확인하기
+docker node inspect --pretty worker1
+
+서비스의 컨테이너가 할당될 노드의 종류를 선택할 수 있다. 노드 라벨을 추가함으로써 제약조건을
+설정할 수도 있지만 노드의 ID나 호스트 이름, 도커 데몬의 라벨 등으로도 제약조건을 설정할 수 있다.
+docker service create --name label_test \
+--constraint 'node.labels.storage == ssd' \
+--replicas=5 \
+ubuntu:14.04 \
+ping www.naver.com
+
+
+### 도커 컴포즈
+도커 컴포즈는 여러 개의 컨테이너를 하나의 프로젝트로서 다룰 수 있는 작업 환경을 제공한다.
+도커 컴포즈는 여러 개의 컨테이너의 옵션과 환경을 정의한 파일을 읽어 컨테이너를 순차적으로
+생성하는 방식으로 동작한다. 도커 컴포즈의 설정 파일은 run 명령의 옵션을 그대로 사용할 수 있으며,
+각 컨테이너의 의존성, 네트워크, 볼륨 등을 함께 정의할 수 있다. 또한 스웜 모드의 서비스와 유사하게
+설정 파일에 정의된 서비스의 컨테이너 수를 유동적으로 조절할 수 있으며 컨테이너의 서비스 디스커버리
+도 자동으로 이뤄진다.
+
+##도커 컴포즈 설치
+sudo su -
+curl -L https://github.com/docker/compose/releases/download/1.11.0/docker-compose-`uname -s`-`uname -m` > /usr/local/bin/docker-compose
+exit
+sudo chmod +x /usr/local/bin/docker-compose
+
+
+##도커 컴포즈 사용
+도커 컴포즈는 컨테이너의 설정이 정의된 YAML 파일을 읽어 도커 엔진을 통해 컨테이너를 생성한다.
+따라서 도커 컴포즈를 사용하려면 먼저 YAML 파일을 작성해야 한다.
+docker run -d --name mysql \
+alicek106/composetest:mysql \
+mysqld
+
+docker run -d -p 80:80 \
+--link mysql:db --name web \
+alicek106/composetest:web \
+apachectl - DFOREGROUND
+
+
+vi docker-compose.yml
+version: '3.0'
+services:
+  web:
+    image: alicek106/composetest:web
+    ports:
+      - "80:80"
+    links:
+      - mysql:db
+    command: apachectl -DFOREGROUND
+  mysql:
+    image: alicek106/composetest:mysql
+    command: mysqld
+
+-도커 컴포즈 생성
+docker-compose up -d
+
+-생성된 컨테이너 조회
+docker-compose ps
+
+도커 컴포즈는 컨테이너를 프로젝트 및 서비스 단위로 구분한다.
+[프로젝트 이름]_[서비스이름]_[서비스 내에서 컨테이너의 번호]
+
+하나의 서비스에는 여러 개의 컨테이너가 존재할 수 있으므로 차례대로 증가하는 컨테이너의 번호를
+붙여 서비스 내의 컨테이너를 구별한다.
+docker-compose scale mysql=2
+docker-compose ps
+
+-생성된 도커 컴포즈 프로젝트 삭제하기
+docker-compose down
+
+-YAML파일 작성
+야믈 파일은 크게 버전, 서비스, 볼륨, 네트워크 정의의 4가지 항목으로 구성된다. 각 항목의 하위항목을
+정의하려면 2개의 공백으로 들여쓰기한다.
+
+1) 버전정의
+버전3을 기준으로 한다.
+
+2) 서비스정의
+서비스는 도커 컴포즈로 생성할 컨테이너 옵션을 정의한다. 이 항목에 쓰인 각 서비스는 컨테이너로
+구현되며, 하나의 프로젝트로서 도커 컴포즈에 의해 관리된다. 서비스의 이름은 services의 하위항목
+으로 정의하고, 컨테이너의 옵션은 서비스 이름의 하위 항목에 정의된다.
+  image: 서비스의 컨테이너를 생성할 때 쓰일 이미지의 이름 설정. 
+  llinks: docker run 명령어의 --link와 같으며, 다른 서비스에 서비스명만으로 접근할 수 있도록 설정
+  environment: docker run 명령어의 --env, -e 옵션과 동일, 서비스의 컨테이너 내부에서 사용할
+    환경변수를 지정하며, 딕셔너리나 배열 형태로 사용할 수 있다.
+  command: 컨테이너가 실행될 때 수행할 명령어를 설정한다.
+  depends_on: 특정 컨테이너에 대한 의존관계를 나타내며, 이 항목에 명시된 컨테이너가 먼저 생성되고
+    실행된다. 
+  ports: docker run 명령어의 -p와 같으며 서비스의 컨테이너를 개방할 포트를 설정한다.
+  build: build항목에 정의된 dockerfile에서 이미지를 빌드해 서비스의 컨테이너를 생성하도록 설정한다.
+  extends: 다른 YAML파일이나 현재 야믈파일에서 서비스 속성을 상속받게 설정한다.
+
+3) 네트워크정의
+  driver: 도커 컴포즈는 생성된 컨테이너를 위해 기본적으로 브리지 타입의 네트워크를 생성한다.
+    그러나 야믈 파일에서 driver항목을 정의해 서비스의 컨테이너가 브리지 네트워크가 아닌 다른 
+    네트워크를 사용하도록 설정할 수 있다.
+  ipam: IP Address Manager를 위해 사용할 수 있는 옵션으로서 subnet, ip 범위 등을 설정할 수 있다.
+  external: 야믈 파일을 통해 프로젝트를 생성할 때마다 네트워크를 생성하는 것이 아닌, 기존의
+    네트워크를 사용하도록 설정한다. 
+
+4) 볼륨정의
+  driver: 볼륨을 생성할 때 사용될 드라이버를 설정한다. 어떠한 설정하지 않으면 local로 설정되며 
+    사용하는 드라이버에 따라 변경해야 한다.
+  external: 도커 컴포즈는 야믈파일에서 volume, volumes-from 옵션 등을 사용하면 프로젝트마다
+    볼륨을 생성한다.
+
+5) 야믈파일 검증하기
+야믈 파일을 작성할 때 오타 검사나 파일 포맷이 적절한지 등을 검사하려면 아래 명령어를 이용
+기본적으로 현재 디렉터리의 docker-compose.yml파일을 검사하지만 경로를 지정해 줄 수 있다.
+docker-compose config
+
+#도커 컴포즈 네트워크
+야믈 파일에 네트워크 항목을 정의하지 않으면 도커 컴포즈는 프로젝트별로 브리지 타입의 네트워크를
+생성한다. 생성된 네트워크의 이름은 [프로젝트 이름]_default로 설정되며, docker-compose up명령어로
+생성, docker-compose down명령어로 삭제된다.
+
+#도커 스웜모드와 함께 사용하기
+스택은 야믈파일에서 생성된 컨테이너의 묶음으로서 야믈 파일로 스택을 생성하면 야플 파일에 
+정의된 서비스가 스웜 모드의 클러스터에서 일괄적으로 생성된다. 즉, 야믈파일에 정의된 서비스가
+스웜모드의 서비스로 변환된 것이다.
+단 스택은 도커 컴포즈 명령어인 docker-compose가 아닌 docker stack으로 제어해야 한다.
+스택은 도커 컴포즈에 의해서 생성된 것이 아니라 스웜 모드 클러스터의 매니저에 의해 생성된다.
+
+-스택 사용하기
+vi docker-compose.yml
+
+networks: {}
+services:
+  mysql:
+    command: mysqld
+    image: alicek106/composetest:mysql
+  web:
+    command: apachectl -DFOREGROUND
+    image: alicek106/composetest:web
+    links:
+    - mysql:db
+    ports:
+    - 80:80
+version: '3.0'
+volumes: {}
+
+매니저노드 docker swarm leave --force
+docker swarm init
+
+워커노드 docker swarm leave
+각노드에서 join
+docker node ls
+
+
+docker stack deploy -c docker-compose.yml mystack
+docker stack ls
+docker stack ps mystack
+
+스택에서 생성된 서비스는 스웜 모드에서 사용된 서비스와 같으므로 docker service명령어로도
+확인할 수 있다.
+docker service ls
+
+컨테이너수 조절
+docker service scale mystack_web=2
+
+-스택삭제
+docker stack rm mystack
+
+
+
