@@ -257,18 +257,147 @@ Nginx 인그레스 컨트롤러가 해당 요청을 처리한다.
 - 인그레스 컨트롤러의 동작 원리 이해
 
 ```bash
+인그레스를 사용하는 방법
+1. 공식 깃허브에서 제공되는 YAML 파일로 Nginx 인그레스 컨트롤러를 생성한다.
+2. Nginx 인그레스 컨트롤러를 외부로 노출하기 위한 서비스를 생성한다.
+3. 요청 처리 규칙을 정의하는 인그레스 오브젝트를 생성한다.
+4. Nginx 인그레스 컨트롤러로 들어온 요청은 인그레스 규칙에 따라 적절한 서비스로 전달된다.
+
+위 과정 중 3번에서 인그레스를 생성하면 인그레스 컨트롤러는 자동으로 인그레스를 로드해 Nginx 웹 서버에 적용한다.
+이를 위해 Nginx 인그레스 컨트롤러는 항상 인그레스 리소스의 상태를 지켜보고 있으며, 
+기본적으로 모든 네임스페이스의 인그레스 리소스를 읽어와 규칙을 적용한다.
+
+===* 참고
+쿠버네티스의 API에는 특정 오브젝트의 상태가 변화하는 것을 확인할 수 있는 Watch라는 API가 있으며,
+인그레스 컨트롤러 또한 인그레스 리소스에 대해 Watch API를 사용한다. 
+===
+
+특정 경로와 호스트 이름으로 들어온 요청은 인그레스에 정의된 규칙에 따라 서비스로 전달된다.
+이전에 생성했던 테스트용 인그레스에서는 /echo-hostname이라는 경로로 들어온 요청을 hostname-service라는 서비스의 80포트로 전달했다.
+
+하지만 요청이 실제로 hostname-service라는 서비스로 전달되는 것은 아니며, **Nginx 인그레스 컨트롤러는 서비스에 의해 생성된 엔드포인트로 요청을 직접 전달한다.**
+**즉, 서비스의 ClusterIP가 아닌 엔드포인트의 실제 종착 지점들로 요청이 전달되는 셈이다.** 
+이러한 동작을 쿠버네티스에서는 **바이패스(bypass)**라고 한다. 서비스를 거치지 않고 포드로 직접 요청이 전달되기 때문이다.
+
+#endpoints 항목에 출려된 지점으로 요청이 전달된다.
+> kubectl get endpoints
 
 ```
 
 # 8.3 인그레스의 세부 기능: annotation을 이용한 설정
 
 ```bash
+인그레스는 YAML 파일의 주석(annotation)항목을 정의함으로써 다양한 옵션을 사용할 수 있다.
+이전에 사용했던 두 개의 주석항목을 다시 살펴본다.
 
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-example
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+  - host: alicek106.example.com                   
+    http:
+      paths:
+      - path: /echo-hostname                   
+        backend:
+          serviceName: hostname-service        
+          servicePort: 80
+
+kubernetes.io/ingress.class는 해당 인그레스 규칙을 어떤 인그레스 컨트롤러에 적용할 것인지를 의미한다.
+인그레스 컨트롤러 서버는 Nginx 외에도 Kong이나 GKE 등 여러 가지 중 하나를 선택해 사용할 수 있다.
+
+그런데 쿠버네티스 클러스터 자체에서 기본적으로 사용하도록 설정된 인그레스 컨트롤러가 존재하는 경우가 있는데,
+이 경우에는 어떤 인그레스 컨트롤러를 사용할 것인지 반드시 인그레스에 명시해주는 것이 좋다.
+
+nginx.ingress.kubernetes.io/rewrite-target이라는 주석은 Nginx 인그레스 컨트롤러에서만 사용할 수 있는 기능이다.
+이 주석은 인그레스에 정의된 경로로 들어오는 요청을 rewrite-target에 설정된 경로로 전달한다.
+예를 들어 Nginx 인그레스 컨트롤러로 /echo-hostname으로 접근하면 hostname-service에는 / 경로로 전달된다.
+
+단, rewrite-target은 /echo-hostname이라는 경로로 시작하는 모든 요청을 hostname-service의 /로 전달한다.
+예를 들어 /echo-hostname/alice/bob이라는 경로로 요청을 보내도 똑같이 / 로 전달된다.
+
+> curl http://<AWS주소>/echo-hostname/alice/bob
+
+사실 rewrite-target은 Nginx의 캡처 그룹(Captured groups)과 함께 사용할 때 유용한 기능이다.
+캡처 그룹이란 정규 표현식의 형태로 요청 경로 등의 값을 변수로서 사용할 수 있는 방법이다.
+
+> vi ingress-rewrite-target.yaml
+
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-example
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2 # path의 (.*) 에서 획득한 경로로 전달합니다.
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  rules:
+  - host: <여러분이 Nginx 컨트롤러에 접근하기 위한 도메인 이름을 입력합니다>
+  #- host: a2cbfefcfbcfd48f8b4c15039fbb6d0a-1976179327.ap-northeast-2.elb.amazonaws.com
+    http:
+      paths:
+      - path: /echo-hostname(/|$)(.*)          # (.*) 을 통해 경로를 얻습니다.
+        backend:
+          serviceName: hostname-service
+          servicePort: 80
+
+> kubectl apply -f ingress-rewrite-target.yaml
+
+rewrute-target과 path를 수정했다. path 항목에서 (.*)은 Nginx 정규 표현식을 통해 /echo-hostname/ 뒤에 오는 경로를 얻은 뒤, 
+이 값을 rewrite-target에서 사용한 것뿐이다.
+즉, /echo-hostname/으로 접근하면 이전과 동일하게 /로 전달되지만, /echo-hostname/color는 /color로, /echo-hostname/color/red는 
+/color/red로 전달된다.
 ```
 
 # 8.4 Nginx 인그레스 컨트롤러에 SSL/TLS 보안 연결 적용
 
 ```bash
+인그레스의 장점 중 하나는 쿠버네티스의 뒤쪽에 있는 디플로이먼트와 서비스가 아닌, 
+앞쪽에 있는 인그레스 컨트롤러에서 편리하게 SSL/TLS 보안 연결을 설정할 수 있다.
+즉, 인그레스 컨트롤러 지점에서 인증서를 적용해 두면 요청이 전달되는 애플리케이션에 대해 모두 인증서 처리를 할 수 있다.
+따라서 인그레스 컨트롤러가 보안 연결을 수립하기 위한 일종의 관문 역할을 한다고도 볼 수 있다.
+
+AWS와 같은 클라우드 환경에서 LoadBalancer 타입의 서비스를 사용할 계획이라면 클라우드 플랫폼 자체에서 
+관리해주는 인증서를 인그레스 컨트롤러에 적용할 수도 있다.
+
+#보안 연결에 사용할 인증서와 비밀키 생성하기
+이때 "CN=alicek106.~"에는 Nginx 인그레스 컨트롤러에 접근하기 위한 Public DNS 이름을 입력해야 한다.
+
+> openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+-keyout tls.key -out tls.crt -subj "/CN=alicek106.example.com/0=alicek106"
+
+#tls타입의 시크릿을 생성
+> ls
+
+> kubectl create secret tls tls-secret --key tls.key --cert tls.crt
+
+앞서 만들었던 ingress-example이라는 인그레스의 설정에 TLS 옵션을 추가해서 적용한다.
+> vi ingress-tls.yaml
+
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-example
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: "nginx"
+spec:
+  tls:
+  - hosts:
+    - alicek106.example.com            # 여러분의 도메인 이름을 입력해야 합니다.
+    secretName: tls-secret
+  rules:
+  - host: alicek106.example.com          # 여러분의 도메인 이름을 입력해야 합니다.
+    http:
+      paths:
+      - path: /echo-hostname
+        backend:
+          serviceName: hostname-service
+          servicePort: 80
 
 ```
 
