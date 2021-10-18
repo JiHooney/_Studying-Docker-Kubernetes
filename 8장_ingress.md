@@ -404,5 +404,58 @@ spec:
 # 8.5 여러 개의 인그레스 컨트롤러 사용하기
 
 ```bash
+하나의 쿠버네티스 클러스터에서 반드시 하나의 인그레스 컨트롤러를 사용해야 하는 것은 아니다.
+Nginx 인그레스 컨트롤러는 기본적으로 nginx라는 이름의 클래스를 가지고 있으며,
+이 설정을 변경함으로써 여러 개의 Nginx 인그레스 컨트롤러를 사용할 수도 있고,
+인그레스 규칙을 선택적으로 적용할 수도 있다.
 
+> wget \
+https://raw.githubsercontent.com/kubernetes/ingress-nginx/controller-v0.35.0/deploy/static/provider/aws/deploy.yaml
+
+> vi deploy.yaml
+
+...
+args:
+	...
+	- --ingress-class=alicek106-nginx
+	...
+...
+
+> kubectl apply -f deploy.yaml
+
+이제 --ingress-class의 값이 nginx가 아닌 alicek106-nginx이므로 이전에 생성했던
+인그레스 규칙은 더 이상 Nginx 인그레스 컨트롤러에 적용되지 않는다.
+따라서 아래와 같이 인그레스의 kubernetes.io/ingress.class 주석을 alicek106-nginx으로 
+수정해줘야만 Nginx 인그레스 컨트롤러가 해당 인그레스의 규칙을 정상적으로 로드해준다.
+
+> vi ingress-custom-class.yaml
+
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-example
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    kubernetes.io/ingress.class: "alicek106-nginx"
+spec:
+  rules:
+  - host: alicek106.example.com                   # [1]
+    http:
+      paths:
+      - path: /echo-hostname                     # [2]
+        backend:
+          serviceName: hostname-service          # [3]
+          servicePort: 80
+
+```
+
+- 리소스 정리
+
+```jsx
+> cd chapter8/
+> kubectl delete -f ./
+
+혹은 Nginx 인그레스 컨트롤러를 직접 삭제한다.
+> kubectl delete -f \
+https://raw.githubsercontent.com/kubernetes/ingress-nginx/controller-v0.35.0/deploy/static/provider/aws/deploy.yaml
 ```
