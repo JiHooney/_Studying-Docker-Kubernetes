@@ -1,0 +1,43 @@
+	고정 IP		MAC
+master 	192.168.56.110	080027E1CC15
+worker1	192.168.56.111	08-00-27-8A-9B-77
+worker2 	192.168.56.112	08-00-27-2B-B2-9C
+
+1. 버추얼박스에 마스터노드 리눅스 20버전 설치
+
+2. 버추얼박스 파일 -> 호스트 네트워크 관리자 -> VirtualBox Host-Only Ethernet Adapter클릭
+-> DHCP 서버 클릭 -> 서버주소, 서버마스크, 최저주소한계, 최고주소한계 설정 -> 적용
+-> 노드 실행 -> 
+sudo gedit /etc/netplan/01-network-manager-all.yaml
+아래와 같이 수정
+network: 
+  ethernets: 
+    enp0s3: 
+      dhcp4: true 
+    enp0s8: 
+      addresses: [192.168.56.110/24] 
+      gateway4: 192.168.56.1 
+      nameservers:  
+        addresses: [8.8.8.8] 
+  version: 2 
+  renderer: NetworkManager
+-> sudo netplan apply 명령어 실행
+-> 네트워크 접속확인 ping google.com
+
+
+3. 워커노드 생성 
+마스터 노드 복제하기
+이때 모든 네트워크 어댑터 새 MAC 주소 생성,
+완전한복제로 복제하기
+
+호스트 네임 변경
+sudo hostname master
+sudo sh -c 'echo master > /etc/hostname'
+sudo sed -i 's/master/worker/g' /etc/hosts
+
+워커노드들도 고정IP 설정하기
+마스터 노드와 방법 동일
+
+
+
+
