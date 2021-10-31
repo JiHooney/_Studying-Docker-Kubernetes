@@ -1,0 +1,250 @@
+	고정 IP		MAC
+master 	192.168.219.106	08:00:27:a2:49:91
+worker1	192.168.219.107	08:00:27:db:38:b5
+worker2 	192.168.219.108	08:00:27:bb:3c:ad
+
+
+1. 버추얼박스에 마스터노드만들기
+이때 스펙은 cpu 2개이상, ram 2g 이상, 하드 20g이상 
+
+* 서버의 네트워크 설정 
+마스터노드 설정 -> 네트워크 -> 어댑터1 -> "어댑터에 브리지" 선택 -> 고급 -> 
+무작위모드 "모두허용" -> 어댑터2 -> "네트워크어댑터사용하기"체크 -> "호스트전용어댑터"선택
+-> 고급 -> 무작위모드 "모두허용" -> 확인
+
+* 우분투 설치 20.04
+설치후 버추얼박스 -> 장치 -> 클립보드 공유 -> "양방향"선택 -> 
+-> 장치 -> "게스트확장 CD이미지 삽입" 클릭 -> 설치완료되면 아무키 누르기
+(재부팅 해야지 클립보드 공유됨, 이따가 재부팅할거임)
+
+* 기본환경 세팅
+터미널 열기
+sudo -i
+passwd
+암호입력
+
+apt update
+apt install -y openssh-server
+apt install -y net-tools
+
+* 방화벽 제거(제거안하면 이따가 포트를 하나씩 열어주면됨)
+ufw disable
+#방화벽 상태확인
+ufw status verbose 
+
+* 마스터노드와 워커노드들의 호스트명과 IP 명시
+gedit /etc/hosts
+
+아래 내용 추가
+192.168.219.106 master
+192.168.219.107 worker1
+192.168.219.108 worker2
+
+* 호스트명 변경
+hostnamectl set-hostname master
+
+* 고정 IP 설정
+gedit /etc/netplan/01-network-manager-all.yaml
+
+아래와 같이 수정
+# Let NetworkManager manage all devices on this system
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    enp0s8:
+      dhcp6: no
+      addresses: 
+        - 192.168.219.106/24
+      gateway4: 192.168.219.1
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+
+#고정IP설정 적용
+sudo netplan apply 
+
+#IP설정 적용여부 확인
+hostname -I
+ping google.com
+
+#hostname적용하기 위해 재부팅후 확인하기
+reboot
+
+* 도커 설치
+sudo -i
+apt install -y docker.io
+
+#도커 설치 확인
+docker ps
+
+#nginx이미지 작동여부 확인
+docker run -d -p 80:80 --rm --name nginx nginx
+curl localhost:80
+
+#도커 이미지 삭제
+docker rmi nginx
+
+
+* 쿠버네티스 설치
+#Swap 중지
+swapoff -a
+
+#재부팅되면 초기화 되므로 완전히 중지
+sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+* 쿠버네티스 설치 스크립트 만들기
+gedit kubeadm-install.sh
+
+#아래 내용 복붙 및 저장
+sudo apt-get update && sudo apt-get install -y apt-transport-https curl
+curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+cat <<EOF | sudo tee /etc/apt/sources.list.d/kubernetes.list
+deb https://apt.kubernetes.io/ kubernetes-xenial main
+EOF
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+#스크립트 파일 실행
+sh kubeadm-install.sh
+
+#쿠버네티스 설치여부 확인
+kubeadm version
+
+#마스터노드 종료
+shutdown now
+
+
+
+* 클러스터 구축
+버추얼박스에서 마스터노드 스냅샷 찍어놓기
+워커노드 만들기위해 마스터노드 복제 ->
+모든 네트워크 어댑터의 새 MAC주소 생성 ->
+완전한복제 -> 접속
+
+sudo -i
+
+* 호스트명 변경
+hostnamectl set-hostname worker1
+
+* 고정 IP설정
+gedit /etc/netplan/01-network-manager-all.yaml
+
+# Let NetworkManager manage all devices on this system
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    enp0s8:
+      dhcp6: no
+      addresses: 
+        - 192.168.219.107/24
+      gateway4: 192.168.219.1
+      nameservers:
+        addresses: [8.8.8.8, 8.8.4.4]
+
+sudo netplan apply
+reboot
+
+워커노드2도 1과 마찬가지로 진행
+
+
+* 각 서버에서 ping확인
+master -> worker1, worker2
+ping worker1
+ping worker2
+
+worker1 -> master, worker2
+ping master
+ping worker2
+
+worker2 -> master worker1
+ping master
+ping worker1
+
+
+* 클러스터 만들기(마스터노드에서만)
+#만들기전에 포트열기(방화벽 꺼져있으면 안해도됨)
+ufw allow 10248
+ufw allow 6443
+
+sudo mkdir /etc/docker
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+#
+sudo systemctl enable docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+
+# kubelet가 실행인지 확인
+sudo systemctl status kubelet
+# 실행중이 아닐 경우
+sudo systemctl start kubelet
+
+
+# 클러스터 시작
+kubeadm init
+
+성공결과 나온 대로 root말고 일반계정에서 아래 명령어 실행
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+#쿠버네티스 클러스터 조인명령어 복사
+kubeadm join 192.168.219.106:6443 --token z2u5jo.jn908b77cyw10oha \
+	--discovery-token-ca-cert-hash sha256:fea86b0e0119fd640487666813fd1e5638532a788f4d1783132288ec6c8cda11
+
+* 각 워커노드에도 도커데몬 재설정(워커노드들)
+ufw allow 10248
+ufw allow 6443
+
+sudo mkdir /etc/docker
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+#
+sudo systemctl enable docker
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+
+# kubelet가 실행인지 확인
+sudo systemctl status kubelet
+# 실행중이 아닐 경우
+sudo systemctl start kubelet
+
+
+# 클러스터 조인하기
+kubeadm join 192.168.219.106:6443 --token z2u5jo.jn908b77cyw10oha \
+	--discovery-token-ca-cert-hash sha256:fea86b0e0119fd640487666813fd1e5638532a788f4d1783132288ec6c8cda11
+
+
+* 마스터 노드에서 노드상태확인(일반계정)
+kubectl get nodes
+
+아직 NotReady상태인데 pod네트워크를 설치해야 한다.
+
+
+* Overlay Network설치
+https://www.weave.works/docs/net/latest/kubernetes/kube-addon/ 이 사이트에서 복사
+
+kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"
+
+#클러스터 동작상태 확인
+kubectl create deploy nginx-deploy --image=nginx
+kubectl get pods -o wide
+kubectl delete deploy nginx-deploy
