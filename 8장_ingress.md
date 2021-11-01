@@ -105,8 +105,7 @@ spec:
 
 아래의 명령어를 실행하면 Nginx 인그레스 컨트롤러와 관련된 모든 리소스를 한 번에 설치할 수 있다.
 
-> kubectl apply -f \
-https://raw.githubsercontent.com/kubernetes/ingress-nginx/controller-v0.35.0/deploy/static/provider/aws/deploy.yaml
+> kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.0.4/deploy/static/provider/cloud/deploy.yaml
 
 실행결과를 보면 Nginx 인그레스 컨트롤러를 설치하기 위해 다양한 쿠버네티스 리소스를 한 번에 생성한다.
 우선 ingress-nginx라는 네임스페이스에 Nginx 웹 서버 디플로이먼트를 생성하고,
